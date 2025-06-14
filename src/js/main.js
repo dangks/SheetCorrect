@@ -498,8 +498,18 @@ function exportExcel() {
     // 生成文件名
     const originalFileName = document.getElementById('file2').files[0]?.name || 'data';
     const baseName = originalFileName.replace(/\.(xlsx|xls)$/i, '');
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const newFileName = `${baseName}_已修改_${timestamp}.xlsx`;
+    // 生成时间戳
+    const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    const timestamp = [
+        now.getUTCFullYear(),
+        (now.getUTCMonth() + 1).toString().padStart(2, '0'),
+        now.getUTCDate().toString().padStart(2, '0'),
+        'T',
+        now.getUTCHours().toString().padStart(2, '0'),
+        now.getUTCMinutes().toString().padStart(2, '0'),
+        now.getUTCSeconds().toString().padStart(2, '0')
+    ].join('').replace('T', '_'); 
+    const newFileName = `${baseName}_fix_${timestamp}.xlsx`;
 
     // 导出文件
     XLSX.writeFile(newWorkbook, newFileName, {
