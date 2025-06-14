@@ -12,13 +12,20 @@ async function readExcel(file, isFirstFile) {
         const reader = new FileReader();
         reader.onload = function(e) {
             const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, {type: 'array'});
+            const workbook = XLSX.read(data, {
+                type: 'array',
+                cellStyles: true,
+                cellDates: false,  // 不转换日期
+                cellNF: true,
+                cellFormula: true,
+                bookVBA: true
+            });
             
             if (isFirstFile) {
                 workbook1 = workbook;
             } else {
                 workbook2 = workbook;
-                originalWorkbook = workbook; // 保存原始工作簿
+                originalWorkbook = workbook;  // 保存完整的原始工作簿
             }
             updateSheetList(workbook, isFirstFile ? 'sheet1' : 'sheet2');
             resolve(workbook);
@@ -50,23 +57,39 @@ function excelDateToJSDate(serial) {
     return new Date(date_info.getFullYear(), date_info.getMonth(), date_info.getDate(), hours, minutes, seconds);
 }
 
+// 添加日期格式化辅助函数
+function formatDisplayDate(date) {
+    if (!(date instanceof Date)) {
+        date = new Date(date);
+    }
+    if (isNaN(date.getTime())) return '';
+    
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    
+    return `${year}-${month}-${day}`;
+}
+
 function loadSheetData(workbook, sheetName, isFirstFile) {
     const sheet = workbook.Sheets[sheetName];
     const range = XLSX.utils.decode_range(sheet['!ref']);
-    const maxCol = range.e.c;
     
     const data = [];
     for(let R = range.s.r; R <= range.e.r; R++) {
-        const row = new Array(maxCol + 1).fill('');
+        const row = new Array(range.e.c + 1).fill('');
         for(let C = range.s.c; C <= range.e.c; C++) {
-            const cell_ref = XLSX.utils.encode_cell({r: R, c: C});
-            const cell = sheet[cell_ref];
+            const cellRef = XLSX.utils.encode_cell({r: R, c: C});
+            const cell = sheet[cellRef];
             if(cell) {
                 let value = cell.v;
-                if(cell.t === 'n' && !isNaN(value)) {
-                    const possibleDate = excelDateToJSDate(value);
-                    if (possibleDate && possibleDate.getFullYear() > 1900 && possibleDate.getFullYear() < 2100) {
-                        value = possibleDate.toLocaleDateString('zh-CN');
+                
+                // 处理日期显示
+                if(cell.t === 'n' && cell.z && 
+                   (cell.z.includes('y') || cell.z.includes('m') || cell.z.includes('d'))) {
+                    const dateValue = excelDateToJSDate(value);
+                    if (dateValue) {
+                        value = formatDisplayDate(dateValue);
                     }
                 }
                 row[C] = value;
@@ -310,33 +333,46 @@ function displayTable(data, containerId) {
 
 function displayMultiFieldResults(results) {
     let html = '<table><tr>';
-    
-    // 确保即使没有结果也显示表头
-    const headers = [...headers2, '修改详情', '操作'];
-    headers.forEach(h => html += `<th>${h}</th>`);
-    html += '</tr>';
-
-    if(results.length > 0) {
+    if(results.length > 0 && results[0].row) {
+        headers2.forEach(h => html += `<th>${h || ''}</th>`);
+        html += `<th>修改详情</th><th>操作</th></tr>`;
+        
         results.forEach((result, index) => {
-            const isApplied = result.isApplied || false;
-            html += `<tr class="diff-row ${isApplied ? 'changes-applied' : ''}">`;
-            result.row.forEach(cell => html += `<td>${cell || ''}</td>`);
+            html += '<tr class="diff-row">';
+            result.row.forEach(cell => {
+                // 如果是日期，确保格式化显示
+                if(cell instanceof Date || (typeof cell === 'string' && !isNaN(Date.parse(cell)))) {
+                    cell = formatDisplayDate(cell);
+                }
+                html += `<td>${cell || ''}</td>`;
+            });
             
-            // 添加修改详情列
+            // 修改详情
             html += '<td class="changes">';
             result.changes.forEach(change => {
+                let oldVal = change.oldVal;
+                let newVal = change.newVal;
+                
+                // 格式化日期值
+                if(oldVal instanceof Date || (typeof oldVal === 'string' && !isNaN(Date.parse(oldVal)))) {
+                    oldVal = formatDisplayDate(oldVal);
+                }
+                if(newVal instanceof Date || (typeof newVal === 'string' && !isNaN(Date.parse(newVal)))) {
+                    newVal = formatDisplayDate(newVal);
+                }
+                
                 html += `<div>
-                    <span class="status-indicator ${isApplied ? 'modified' : 'pending'}"></span>
-                    ${change.field}: ${change.oldVal || ''} → ${change.newVal || ''}
+                    <span class="status-indicator ${result.isApplied ? 'modified' : 'pending'}"></span>
+                    ${change.field}: ${oldVal || ''} → ${newVal || ''}
                 </div>`;
             });
             html += '</td>';
             
             // 添加操作按钮
             html += `<td>
-                <button class="btn ${isApplied ? 'btn-modified' : ''}" 
-                    ${isApplied ? 'disabled' : `onclick="applyMultiChanges(${index})"`}>
-                    ${isApplied ? '已修改' : '应用修改'}
+                <button class="btn ${result.isApplied ? 'btn-modified' : ''}" 
+                    ${result.isApplied ? 'disabled' : `onclick="applyMultiChanges(${index})"`}>
+                    ${result.isApplied ? '已修改' : '应用修改'}
                 </button>
             </td>`;
             
@@ -408,118 +444,79 @@ function exportExcel() {
         return;
     }
 
-    const currentSheetName = document.getElementById('sheet2').value;
-    // 创建新的工作簿，复制原始工作簿的所有属性
-    const newWorkbook = {
-        SheetNames: [...originalWorkbook.SheetNames],
-        Sheets: {},
-        Workbook: originalWorkbook.Workbook ? {...originalWorkbook.Workbook} : undefined,
-        Props: originalWorkbook.Props ? {...originalWorkbook.Props} : undefined
-    };
-
-    // 复制所有工作表
-    originalWorkbook.SheetNames.forEach(sheetName => {
-        const originalSheet = originalWorkbook.Sheets[sheetName];
+    try {
+        const currentSheetName = document.getElementById('sheet2').value;
+        const inputElement = document.getElementById('file2');
+        const file = inputElement.files[0];
         
-        if (sheetName === currentSheetName) {
-            // 创建新工作表，完整复制原始工作表的所有属性
-            const newSheet = {};
-            
-            // 复制工作表级别的属性
-            ['!margins', '!merges', '!cols', '!rows', '!protect', '!autofilter'].forEach(prop => {
-                if (originalSheet[prop]) {
-                    newSheet[prop] = JSON.parse(JSON.stringify(originalSheet[prop]));
-                }
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const data = new Uint8Array(e.target.result);
+            // 导出时使用完整的格式选项
+            const workbook = XLSX.read(data, {
+                type: 'array',
+                cellStyles: true,
+                cellDates: true,
+                cellNF: true,
+                cellFormula: true,
+                bookVBA: true
             });
 
-            // 复制范围定义
-            if (originalSheet['!ref']) {
-                newSheet['!ref'] = originalSheet['!ref'];
+            // 应用修改但保持原格式
+            if (changes && changes.length > 0) {
+                const sheet = workbook.Sheets[currentSheetName];
+                
+                changes.forEach(change => {
+                    if (change.isApplied) {
+                        change.changes.forEach(fieldChange => {
+                            const colIndex = headers2.indexOf(fieldChange.field);
+                            if (colIndex !== -1) {
+                                const cellRef = XLSX.utils.encode_cell({
+                                    r: change.rowIndex,
+                                    c: colIndex
+                                });
+                                
+                                const originalCell = sheet[cellRef];
+                                if (originalCell) {
+                                    // 保持原单元格的所有属性，只更新值
+                                    sheet[cellRef] = {
+                                        ...originalCell,
+                                        v: fieldChange.newVal
+                                    };
+                                }
+                            }
+                        });
+                    }
+                });
             }
 
-            // 复制所有单元格并保持格式
-            Object.keys(originalSheet).forEach(cellRef => {
-                if (cellRef[0] !== '!') {  // 跳过特殊属性
-                    const originalCell = originalSheet[cellRef];
-                    newSheet[cellRef] = {
-                        ...originalCell,
-                        // 确保完整复制样式对象
-                        s: originalCell.s ? JSON.parse(JSON.stringify(originalCell.s)) : undefined
-                    };
-                }
+            // 生成文件名
+            const originalFileName = file.name;
+            const baseName = originalFileName.replace(/\.(xlsx|xls)$/i, '');
+            const now = new Date();
+            const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+            const newFileName = `${baseName}_fix ${timestamp}.xlsx`;
+
+            // 导出时使用完整的选项
+            XLSX.writeFile(workbook, newFileName, {
+                bookType: 'xlsx',
+                type: 'binary',
+                cellStyles: true,
+                cellDates: true,
+                cellNF: true,
+                cellFormula: true,
+                compression: true,
+                bookSST: true,
+                bookVBA: true
             });
+        };
+        
+        reader.readAsArrayBuffer(file);
 
-            // 应用数据修改
-            changes.forEach(change => {
-                if (change.isApplied) {
-                    change.changes.forEach(fieldChange => {
-                        const colIndex = headers2.indexOf(fieldChange.field);
-                        if (colIndex !== -1) {
-                            const cellRef = XLSX.utils.encode_cell({ r: change.rowIndex, c: colIndex });
-                            const originalCell = originalSheet[cellRef];
-                            
-                            // 创建新的单元格，保留原始格式
-                            const newCell = {
-                                ...originalCell,
-                                v: fieldChange.newVal  // 更新值
-                            };
-
-                            // 处理日期类型
-                            if (originalCell && originalCell.t === 'n' && isDateValue(fieldChange.newVal)) {
-                                // 将日期字符串转换为序列号
-                                const dateObj = new Date(fieldChange.newVal);
-                                const excelDate = XLSX.SSF.parse_date_code(
-                                    25569 + dateObj.getTime() / (24 * 60 * 60 * 1000)
-                                );
-                                newCell.v = excelDate;
-                                newCell.t = 'n';
-                                // 保持原有日期格式
-                                newCell.z = originalCell.z || 'yyyy-mm-dd';
-                            }
-
-                            // 确保保留样式信息
-                            if (originalCell && originalCell.s) {
-                                newCell.s = JSON.parse(JSON.stringify(originalCell.s));
-                            }
-
-                            newSheet[cellRef] = newCell;
-                        }
-                    });
-                }
-            });
-
-            newWorkbook.Sheets[sheetName] = newSheet;
-        } else {
-            // 直接复制其他工作表
-            newWorkbook.Sheets[sheetName] = JSON.parse(JSON.stringify(originalSheet));
-        }
-    });
-
-    // 生成文件名
-    const originalFileName = document.getElementById('file2').files[0]?.name || 'data';
-    const baseName = originalFileName.replace(/\.(xlsx|xls)$/i, '');
-    // 生成时间戳
-    const now = new Date(Date.now() + 8 * 60 * 60 * 1000);
-    const timestamp = [
-        now.getUTCFullYear(),
-        (now.getUTCMonth() + 1).toString().padStart(2, '0'),
-        now.getUTCDate().toString().padStart(2, '0'),
-        'T',
-        now.getUTCHours().toString().padStart(2, '0'),
-        now.getUTCMinutes().toString().padStart(2, '0'),
-        now.getUTCSeconds().toString().padStart(2, '0')
-    ].join('').replace('T', '_'); 
-    const newFileName = `${baseName}_fix_${timestamp}.xlsx`;
-
-    // 导出文件
-    XLSX.writeFile(newWorkbook, newFileName, {
-        bookType: 'xlsx',
-        bookSST: false,
-        type: 'binary',
-        cellStyles: true,
-        cellDates: true,
-        compression: true
-    });
+    } catch (error) {
+        console.error('导出错误:', error);
+        alert('导出过程中出现错误：' + error.message);
+    }
 }
 
 // 辅助函数：判断是否为日期值

@@ -79,6 +79,12 @@ SheetCorrect/
 [MIT License](LICENSE)
 
 
+## 分支说明
+-  main: 主干分支，最新稳定版本
+-  develop: 开发分支，包含最新功能
+-  js-version: 特殊留存版本，包含旧版 JavaScript 代码
+
+-------
 ## ToDo
 
 - 💾 保留原始 Excel 格式导出
